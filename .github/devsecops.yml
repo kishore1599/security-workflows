@@ -1,1 +1,118 @@
+name: Central DevSecOps Pipeline
+on:
+  workflow_call:
+    secrets:
+      SNYK_TOKEN:
+        required: true
 
+jobs:
+  security-scans:
+    name: Enterprise Security Scans
+    runs-on: ubuntu-latest
+
+    steps:
+
+    # -----------------------------------
+    # Checkout Repository
+    # -----------------------------------
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # -----------------------------------
+    # Setup Python
+    # -----------------------------------
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # -----------------------------------
+    # Install Security Tools
+    # -----------------------------------
+    - name: Install Semgrep
+      run: |
+        pip install semgrep
+
+    - name: Install Checkov
+      run: |
+        pip install checkov
+
+    # -----------------------------------
+    # SAST Scan - Semgrep
+    # -----------------------------------
+    - name: Run SAST Scan
+      run: |
+        semgrep scan --config auto . || true
+
+    # -----------------------------------
+    # Secrets Scan - Gitleaks
+    # -----------------------------------
+    - name: Run Secrets Scan
+      uses: gitleaks/gitleaks-action@v2
+      continue-on-error: true
+
+    # -----------------------------------
+    # SCA Scan - Snyk
+    # -----------------------------------
+    - name: Run SCA Scan
+      uses: snyk/actions/node@master
+      continue-on-error: true
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+    # -----------------------------------
+    # Install Trivy
+    # -----------------------------------
+    - name: Install Trivy
+      run: |
+        sudo apt-get update
+        sudo apt-get install wget apt-transport-https gnupg lsb-release -y
+
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+
+        echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+
+        sudo apt-get update
+        sudo apt-get install trivy -y
+
+    # -----------------------------------
+    # Build Docker Image
+    # -----------------------------------
+    - name: Build Docker Image
+      run: |
+        docker build -t app-image . || true
+
+    # -----------------------------------
+    # Container Scan - Trivy
+    # -----------------------------------
+    - name: Run Container Scan
+      run: |
+        trivy image app-image || true
+
+    # -----------------------------------
+    # IaC Scan - Checkov
+    # -----------------------------------
+    - name: Run IaC Scan
+      run: |
+        checkov -d . || true
+
+    # -----------------------------------
+    # License Scan
+    # -----------------------------------
+    - name: Run License Scan
+      run: |
+        npx license-checker --summary || true
+
+    # -----------------------------------
+    # Install Syft
+    # -----------------------------------
+    - name: Install Syft
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+    # -----------------------------------
+    # Generate SBOM
+    # -----------------------------------
+    - name: Generate SBOM
+      run: |
+        syft . -o table
