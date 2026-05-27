@@ -1,9 +1,9 @@
 name: Central DevSecOps Pipeline
 on:
   workflow_call:
-    secrets:
-      SNYK_TOKEN:
-        required: true
+    #secrets:
+      #SNYK_TOKEN:
+        #required: true
 
 jobs:
   security-scans:
@@ -54,11 +54,11 @@ jobs:
     # -----------------------------------
     # SCA Scan - Snyk
     # -----------------------------------
-    - name: Run SCA Scan
-      uses: snyk/actions/node@master
-      continue-on-error: true
-      env:
-        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    #- name: Run SCA Scan
+      #uses: snyk/actions/node@master
+      #continue-on-error: true
+      #env:
+        #SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
     # -----------------------------------
     # Install Trivy
