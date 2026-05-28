@@ -166,12 +166,25 @@ jobs:
             # Checkov Results
             # --------------------------------
             if os.path.exists('checkov.json'):
+
                 with open('checkov.json') as f:
                     data = json.load(f)
 
-                failed = data.get('results', {}).get('failed_checks', [])
+                failed_checks = []
 
-                for item in failed:
+                # Handle dictionary format
+                if isinstance(data, dict):
+                    failed_checks = data.get('results', {}).get('failed_checks', [])
+
+                # Handle list format
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            failed_checks.extend(
+                                item.get('results', {}).get('failed_checks', [])
+                            )
+
+                for item in failed_checks:
                     writer.writerow([
                         'Checkov',
                         item.get('severity'),
