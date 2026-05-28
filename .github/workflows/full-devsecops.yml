@@ -91,116 +91,136 @@ jobs:
         checkov -d . -o json > checkov.json || true
 
     # -----------------------------------
-    # Generate Unified CSV Report
+    # Generate Excel Security Report
     # -----------------------------------
-    - name: Generate Unified Security CSV Report
+    - name: Generate Excel Security Report
       run: |
         python3 - <<EOF
         import json
-        import csv
         import os
+        import pandas as pd
 
-        output_file = 'security-report.csv'
+        writer = pd.ExcelWriter(
+            'security-report.xlsx',
+            engine='openpyxl'
+        )
 
-        with open(output_file, 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile)
+        # --------------------------------
+        # Semgrep Sheet
+        # --------------------------------
+        semgrep_rows = []
 
-            writer.writerow([
-                'Tool',
-                'Severity',
-                'File',
-                'Vulnerability',
-                'Details'
-            ])
+        if os.path.exists('semgrep.json'):
+            with open('semgrep.json') as f:
+                data = json.load(f)
 
-            # --------------------------------
-            # Semgrep Results
-            # --------------------------------
-            if os.path.exists('semgrep.json'):
-                with open('semgrep.json') as f:
-                    data = json.load(f)
+            for result in data.get('results', []):
+                semgrep_rows.append({
+                    'Severity': result.get('extra', {}).get('severity'),
+                    'File': result.get('path'),
+                    'Rule': result.get('check_id'),
+                    'Details': result.get('extra', {}).get('message')
+                })
 
-                for result in data.get('results', []):
-                    writer.writerow([
-                        'Semgrep',
-                        result.get('extra', {}).get('severity'),
-                        result.get('path'),
-                        result.get('check_id'),
-                        result.get('extra', {}).get('message')
-                    ])
+        pd.DataFrame(semgrep_rows).to_excel(
+            writer,
+            sheet_name='Semgrep',
+            index=False
+        )
 
-            # --------------------------------
-            # Gitleaks Results
-            # --------------------------------
-            if os.path.exists('gitleaks.json'):
-                with open('gitleaks.json') as f:
-                    data = json.load(f)
+        # --------------------------------
+        # Gitleaks Sheet
+        # --------------------------------
+        gitleaks_rows = []
 
+        if os.path.exists('gitleaks.json'):
+            with open('gitleaks.json') as f:
+                data = json.load(f)
+
+            for item in data:
+                gitleaks_rows.append({
+                    'Severity': 'HIGH',
+                    'File': item.get('File'),
+                    'Rule': item.get('RuleID'),
+                    'Details': 'Hardcoded secret detected'
+                })
+
+        pd.DataFrame(gitleaks_rows).to_excel(
+            writer,
+            sheet_name='Gitleaks',
+            index=False
+        )
+
+        # --------------------------------
+        # Trivy Sheet
+        # --------------------------------
+        trivy_rows = []
+
+        if os.path.exists('trivy.json'):
+            with open('trivy.json') as f:
+                data = json.load(f)
+
+            for result in data.get('Results', []):
+                for vuln in result.get('Vulnerabilities', []) or []:
+                    trivy_rows.append({
+                        'Severity': vuln.get('Severity'),
+                        'File': result.get('Target'),
+                        'Rule': vuln.get('VulnerabilityID'),
+                        'Details': vuln.get('Title')
+                    })
+
+        pd.DataFrame(trivy_rows).to_excel(
+            writer,
+            sheet_name='Trivy',
+            index=False
+        )
+
+        # --------------------------------
+        # Checkov Sheet
+        # --------------------------------
+        checkov_rows = []
+
+        if os.path.exists('checkov.json'):
+
+            with open('checkov.json') as f:
+                data = json.load(f)
+
+            failed_checks = []
+
+            if isinstance(data, dict):
+                failed_checks = data.get('results', {}).get('failed_checks', [])
+
+            elif isinstance(data, list):
                 for item in data:
-                    writer.writerow([
-                        'Gitleaks',
-                        'HIGH',
-                        item.get('File'),
-                        item.get('RuleID'),
-                        'Hardcoded secret detected'
-                    ])
+                    if isinstance(item, dict):
+                        failed_checks.extend(
+                            item.get('results', {}).get('failed_checks', [])
+                        )
 
-            # --------------------------------
-            # Trivy Results
-            # --------------------------------
-            if os.path.exists('trivy.json'):
-                with open('trivy.json') as f:
-                    data = json.load(f)
+            for item in failed_checks:
+                checkov_rows.append({
+                    'Severity': item.get('severity'),
+                    'File': item.get('file_path'),
+                    'Rule': item.get('check_id'),
+                    'Details': item.get('check_name')
+                })
 
-                for result in data.get('Results', []):
-                    for vuln in result.get('Vulnerabilities', []) or []:
-                        writer.writerow([
-                            'Trivy',
-                            vuln.get('Severity'),
-                            result.get('Target'),
-                            vuln.get('VulnerabilityID'),
-                            vuln.get('Title')
-                        ])
+        pd.DataFrame(checkov_rows).to_excel(
+            writer,
+            sheet_name='Checkov',
+            index=False
+        )
 
-            # --------------------------------
-            # Checkov Results
-            # --------------------------------
-            if os.path.exists('checkov.json'):
+        writer.close()
 
-                with open('checkov.json') as f:
-                    data = json.load(f)
-
-                failed_checks = []
-
-                # Handle dictionary format
-                if isinstance(data, dict):
-                    failed_checks = data.get('results', {}).get('failed_checks', [])
-
-                # Handle list format
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            failed_checks.extend(
-                                item.get('results', {}).get('failed_checks', [])
-                            )
-
-                for item in failed_checks:
-                    writer.writerow([
-                        'Checkov',
-                        item.get('severity'),
-                        item.get('file_path'),
-                        item.get('check_id'),
-                        item.get('check_name')
-                    ])
-
-        print("Unified security-report.csv generated")
+        print("security-report.xlsx generated")
         EOF
 
     # -----------------------------------
-    # Upload Unified CSV Report
+    # Upload Excel Report
     # -----------------------------------
-    - name: Upload Unified Security Report
+    - name: Upload Security Excel Report
       uses: actions/upload-artifact@v4
       with:
-        name: unified-security-report
-        path: security-report.csv
+        name: security-report
+        path: security-report.xlsx
