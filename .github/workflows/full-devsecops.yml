@@ -89,7 +89,14 @@ jobs:
     - name: Run IaC Scan
       run: |
         checkov -d . -o json > checkov.json || true
-
+        
+    # -----------------------------------
+    # Install Excel Dependencies
+    # -----------------------------------
+    - name: Install Excel Dependencies
+      run: |
+        pip install pandas openpyxl
+        
     # -----------------------------------
     # Generate Excel Security Report
     # -----------------------------------
