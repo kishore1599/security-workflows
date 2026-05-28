@@ -25,7 +25,15 @@ jobs:
         python-version: '3.11'
 
     # -----------------------------------
-    # Install Required Tools
+    # Setup NodeJS
+    # -----------------------------------
+    - name: Setup NodeJS
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    # -----------------------------------
+    # Install Security Tools
     # -----------------------------------
     - name: Install Semgrep
       run: |
@@ -36,11 +44,21 @@ jobs:
         pip install checkov
 
     # -----------------------------------
+    # Install Excel Dependencies
+    # -----------------------------------
+    - name: Install Excel Dependencies
+      run: |
+        pip install pandas openpyxl
+
+    # -----------------------------------
     # SAST Scan - Semgrep
     # -----------------------------------
     - name: Run SAST Scan
       run: |
-        semgrep scan --config auto --json --output semgrep.json . || true
+        semgrep scan \
+          --config auto \
+          --json \
+          --output semgrep.json . || true
 
     # -----------------------------------
     # Secrets Scan - Gitleaks
@@ -55,18 +73,41 @@ jobs:
           --report-format=json || true
 
     # -----------------------------------
+    # License Scan
+    # -----------------------------------
+    - name: Run License Scan
+      run: |
+        npm install -g license-checker
+
+        license-checker \
+          --json \
+          > license.json || true
+
+    # -----------------------------------
     # Install Trivy
     # -----------------------------------
     - name: Install Trivy
       run: |
         sudo apt-get update
-        sudo apt-get install wget apt-transport-https gnupg lsb-release -y
 
-        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+        sudo apt-get install \
+          wget \
+          apt-transport-https \
+          gnupg \
+          lsb-release \
+          -y
 
-        echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+        wget -qO - \
+          https://aquasecurity.github.io/trivy-repo/deb/public.key \
+          | sudo apt-key add -
+
+        echo deb \
+          https://aquasecurity.github.io/trivy-repo/deb \
+          $(lsb_release -sc) main \
+          | sudo tee -a /etc/apt/sources.list.d/trivy.list
 
         sudo apt-get update
+
         sudo apt-get install trivy -y
 
     # -----------------------------------
@@ -81,7 +122,10 @@ jobs:
     # -----------------------------------
     - name: Run Container Scan
       run: |
-        trivy image app-image --format json --output trivy.json || true
+        trivy image \
+          app-image \
+          --format json \
+          --output trivy.json || true
 
     # -----------------------------------
     # IaC Scan - Checkov
@@ -89,14 +133,23 @@ jobs:
     - name: Run IaC Scan
       run: |
         checkov -d . -o json > checkov.json || true
-        
+
     # -----------------------------------
-    # Install Excel Dependencies
+    # Install Syft
     # -----------------------------------
-    - name: Install Excel Dependencies
+    - name: Install Syft
       run: |
-        pip install pandas openpyxl
-        
+        curl -sSfL \
+          https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+          | sh -s -- -b /usr/local/bin
+
+    # -----------------------------------
+    # Generate SBOM
+    # -----------------------------------
+    - name: Generate SBOM
+      run: |
+        syft . -o json > sbom.json || true
+
     # -----------------------------------
     # Generate Excel Security Report
     # -----------------------------------
@@ -118,10 +171,12 @@ jobs:
         semgrep_rows = []
 
         if os.path.exists('semgrep.json'):
+
             with open('semgrep.json') as f:
                 data = json.load(f)
 
             for result in data.get('results', []):
+
                 semgrep_rows.append({
                     'Severity': result.get('extra', {}).get('severity'),
                     'File': result.get('path'),
@@ -141,10 +196,12 @@ jobs:
         gitleaks_rows = []
 
         if os.path.exists('gitleaks.json'):
+
             with open('gitleaks.json') as f:
                 data = json.load(f)
 
             for item in data:
+
                 gitleaks_rows.append({
                     'Severity': 'HIGH',
                     'File': item.get('File'),
@@ -164,11 +221,14 @@ jobs:
         trivy_rows = []
 
         if os.path.exists('trivy.json'):
+
             with open('trivy.json') as f:
                 data = json.load(f)
 
             for result in data.get('Results', []):
+
                 for vuln in result.get('Vulnerabilities', []) or []:
+
                     trivy_rows.append({
                         'Severity': vuln.get('Severity'),
                         'File': result.get('Target'),
@@ -195,16 +255,33 @@ jobs:
             failed_checks = []
 
             if isinstance(data, dict):
-                failed_checks = data.get('results', {}).get('failed_checks', [])
+
+                failed_checks = data.get(
+                    'results',
+                    {}
+                ).get(
+                    'failed_checks',
+                    []
+                )
 
             elif isinstance(data, list):
+
                 for item in data:
+
                     if isinstance(item, dict):
+
                         failed_checks.extend(
-                            item.get('results', {}).get('failed_checks', [])
+                            item.get(
+                                'results',
+                                {}
+                            ).get(
+                                'failed_checks',
+                                []
+                            )
                         )
 
             for item in failed_checks:
+
                 checkov_rows.append({
                     'Severity': item.get('severity'),
                     'File': item.get('file_path'),
@@ -215,6 +292,56 @@ jobs:
         pd.DataFrame(checkov_rows).to_excel(
             writer,
             sheet_name='Checkov',
+            index=False
+        )
+
+        # --------------------------------
+        # License Sheet
+        # --------------------------------
+        license_rows = []
+
+        if os.path.exists('license.json'):
+
+            with open('license.json') as f:
+                data = json.load(f)
+
+            for package, details in data.items():
+
+                license_rows.append({
+                    'Package': package,
+                    'License': details.get('licenses'),
+                    'Version': details.get('version'),
+                    'Repository': details.get('repository')
+                })
+
+        pd.DataFrame(license_rows).to_excel(
+            writer,
+            sheet_name='Licenses',
+            index=False
+        )
+
+        # --------------------------------
+        # SBOM Sheet
+        # --------------------------------
+        sbom_rows = []
+
+        if os.path.exists('sbom.json'):
+
+            with open('sbom.json') as f:
+                data = json.load(f)
+
+            for artifact in data.get('artifacts', []):
+
+                sbom_rows.append({
+                    'Name': artifact.get('name'),
+                    'Version': artifact.get('version'),
+                    'Type': artifact.get('type'),
+                    'Language': artifact.get('language')
+                })
+
+        pd.DataFrame(sbom_rows).to_excel(
+            writer,
+            sheet_name='SBOM',
             index=False
         )
 
