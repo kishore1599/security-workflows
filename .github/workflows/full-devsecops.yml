@@ -25,7 +25,7 @@ jobs:
         python-version: '3.11'
 
     # -----------------------------------
-    # Install Security Tools
+    # Install Required Tools
     # -----------------------------------
     - name: Install Semgrep
       run: |
@@ -40,14 +40,19 @@ jobs:
     # -----------------------------------
     - name: Run SAST Scan
       run: |
-        semgrep scan --config auto . || true
+        semgrep scan --config auto --json --output semgrep.json . || true
 
     # -----------------------------------
     # Secrets Scan - Gitleaks
     # -----------------------------------
     - name: Run Secrets Scan
-      uses: gitleaks/gitleaks-action@v2
-      continue-on-error: true
+      run: |
+        docker run --rm \
+          -v ${{ github.workspace }}:/path \
+          zricethezav/gitleaks:latest detect \
+          --source="/path" \
+          --report-path=/path/gitleaks.json \
+          --report-format=json || true
 
     # -----------------------------------
     # Install Trivy
@@ -76,32 +81,113 @@ jobs:
     # -----------------------------------
     - name: Run Container Scan
       run: |
-        trivy image app-image || true
+        trivy image app-image --format json --output trivy.json || true
 
     # -----------------------------------
     # IaC Scan - Checkov
     # -----------------------------------
     - name: Run IaC Scan
       run: |
-        checkov -d . || true
+        checkov -d . -o json > checkov.json || true
 
     # -----------------------------------
-    # License Scan
+    # Generate Unified CSV Report
     # -----------------------------------
-    - name: Run License Scan
+    - name: Generate Unified Security CSV Report
       run: |
-        npx license-checker --summary || true
+        python3 - <<EOF
+        import json
+        import csv
+        import os
+
+        output_file = 'security-report.csv'
+
+        with open(output_file, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+
+            writer.writerow([
+                'Tool',
+                'Severity',
+                'File',
+                'Vulnerability',
+                'Details'
+            ])
+
+            # --------------------------------
+            # Semgrep Results
+            # --------------------------------
+            if os.path.exists('semgrep.json'):
+                with open('semgrep.json') as f:
+                    data = json.load(f)
+
+                for result in data.get('results', []):
+                    writer.writerow([
+                        'Semgrep',
+                        result.get('extra', {}).get('severity'),
+                        result.get('path'),
+                        result.get('check_id'),
+                        result.get('extra', {}).get('message')
+                    ])
+
+            # --------------------------------
+            # Gitleaks Results
+            # --------------------------------
+            if os.path.exists('gitleaks.json'):
+                with open('gitleaks.json') as f:
+                    data = json.load(f)
+
+                for item in data:
+                    writer.writerow([
+                        'Gitleaks',
+                        'HIGH',
+                        item.get('File'),
+                        item.get('RuleID'),
+                        'Hardcoded secret detected'
+                    ])
+
+            # --------------------------------
+            # Trivy Results
+            # --------------------------------
+            if os.path.exists('trivy.json'):
+                with open('trivy.json') as f:
+                    data = json.load(f)
+
+                for result in data.get('Results', []):
+                    for vuln in result.get('Vulnerabilities', []) or []:
+                        writer.writerow([
+                            'Trivy',
+                            vuln.get('Severity'),
+                            result.get('Target'),
+                            vuln.get('VulnerabilityID'),
+                            vuln.get('Title')
+                        ])
+
+            # --------------------------------
+            # Checkov Results
+            # --------------------------------
+            if os.path.exists('checkov.json'):
+                with open('checkov.json') as f:
+                    data = json.load(f)
+
+                failed = data.get('results', {}).get('failed_checks', [])
+
+                for item in failed:
+                    writer.writerow([
+                        'Checkov',
+                        item.get('severity'),
+                        item.get('file_path'),
+                        item.get('check_id'),
+                        item.get('check_name')
+                    ])
+
+        print("Unified security-report.csv generated")
+        EOF
 
     # -----------------------------------
-    # Install Syft
+    # Upload Unified CSV Report
     # -----------------------------------
-    - name: Install Syft
-      run: |
-        curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-
-    # -----------------------------------
-    # Generate SBOM
-    # -----------------------------------
-    - name: Generate SBOM
-      run: |
-        syft . -o table
+    - name: Upload Unified Security Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: unified-security-report
+        path: security-report.csv
