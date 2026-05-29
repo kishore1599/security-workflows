@@ -2,6 +2,9 @@ name: Central DevSecOps Pipeline
 
 on:
   workflow_call:
+    # secrets:
+    #   SNYK_TOKEN:
+    #     required: false
 
 jobs:
   security-scans:
@@ -25,27 +28,70 @@ jobs:
         python-version: '3.11'
 
     # -----------------------------------
-    # Install Required Tools
+    # Setup NodeJS
     # -----------------------------------
-    - name: Install Semgrep
-      run: |
-        pip install semgrep
-
-    - name: Install Checkov
-      run: |
-        pip install checkov
+    - name: Setup NodeJS
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
 
     # -----------------------------------
-    # SAST Scan - Semgrep
+    # Install Dependencies
     # -----------------------------------
-    - name: Run SAST Scan
+    - name: Install Security Dependencies
       run: |
-        semgrep scan --config auto --json --output semgrep.json . || true
+        pip install semgrep checkov pandas openpyxl
 
     # -----------------------------------
-    # Secrets Scan - Gitleaks
+    # Detect Dockerfile
     # -----------------------------------
-    - name: Run Secrets Scan
+    - name: Detect Dockerfile
+      id: docker_check
+      run: |
+        if find . -name "Dockerfile" | grep -q .; then
+          echo "docker_exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "docker_exists=false" >> $GITHUB_OUTPUT
+        fi
+
+    # -----------------------------------
+    # Detect IaC Files
+    # -----------------------------------
+    - name: Detect IaC Files
+      id: iac_check
+      run: |
+        if find . \( -name "*.tf" -o -name "*.yaml" -o -name "*.yml" \) | grep -q .; then
+          echo "iac_exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "iac_exists=false" >> $GITHUB_OUTPUT
+        fi
+
+    # -----------------------------------
+    # Detect NodeJS Project
+    # -----------------------------------
+    - name: Detect NodeJS Project
+      id: node_check
+      run: |
+        if find . -name "package.json" | grep -q .; then
+          echo "node_exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "node_exists=false" >> $GITHUB_OUTPUT
+        fi
+
+    # -----------------------------------
+    # Run SAST Scan - Semgrep
+    # -----------------------------------
+    - name: Run Semgrep Scan
+      run: |
+        semgrep scan \
+          --config auto \
+          --json \
+          --output semgrep.json . || true
+
+    # -----------------------------------
+    # Run Secrets Scan - Gitleaks
+    # -----------------------------------
+    - name: Run Gitleaks Scan
       run: |
         docker run --rm \
           -v ${{ github.workspace }}:/path \
@@ -55,50 +101,104 @@ jobs:
           --report-format=json || true
 
     # -----------------------------------
+    # Run SCA Scan - Snyk
+    # -----------------------------------
+    # - name: Run Snyk Scan
+    #   if: steps.node_check.outputs.node_exists == 'true'
+    #   uses: snyk/actions/node@master
+    #   continue-on-error: true
+    #   env:
+    #     SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    #   with:
+    #     args: --json-file-output=snyk.json
+
+    # -----------------------------------
+    # License Scan
+    # -----------------------------------
+    - name: Run License Scan
+      if: steps.node_check.outputs.node_exists == 'true'
+      run: |
+        npm install -g license-checker
+
+        license-checker \
+          --json \
+          > license.json || true
+
+    # -----------------------------------
     # Install Trivy
     # -----------------------------------
     - name: Install Trivy
+      if: steps.docker_check.outputs.docker_exists == 'true'
       run: |
         sudo apt-get update
-        sudo apt-get install wget apt-transport-https gnupg lsb-release -y
 
-        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+        sudo apt-get install \
+          wget \
+          apt-transport-https \
+          gnupg \
+          lsb-release \
+          -y
 
-        echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+        wget -qO - \
+          https://aquasecurity.github.io/trivy-repo/deb/public.key \
+          | sudo apt-key add -
+
+        echo deb \
+          https://aquasecurity.github.io/trivy-repo/deb \
+          $(lsb_release -sc) main \
+          | sudo tee -a /etc/apt/sources.list.d/trivy.list
 
         sudo apt-get update
+
         sudo apt-get install trivy -y
 
     # -----------------------------------
     # Build Docker Image
     # -----------------------------------
     - name: Build Docker Image
+      if: steps.docker_check.outputs.docker_exists == 'true'
       run: |
         docker build -t app-image . || true
 
     # -----------------------------------
-    # Container Scan - Trivy
+    # Run Trivy Container Scan
     # -----------------------------------
-    - name: Run Container Scan
+    - name: Run Trivy Scan
+      if: steps.docker_check.outputs.docker_exists == 'true'
       run: |
-        trivy image app-image --format json --output trivy.json || true
+        trivy image \
+          app-image \
+          --format json \
+          --output trivy.json || true
 
     # -----------------------------------
-    # IaC Scan - Checkov
+    # Run IaC Scan - Checkov
     # -----------------------------------
-    - name: Run IaC Scan
+    - name: Run Checkov Scan
+      if: steps.iac_check.outputs.iac_exists == 'true'
       run: |
         checkov -d . -o json > checkov.json || true
-        
+
     # -----------------------------------
-    # Install Excel Dependencies
+    # Install Syft
     # -----------------------------------
-    - name: Install Excel Dependencies
+    - name: Install Syft
+      if: steps.node_check.outputs.node_exists == 'true'
       run: |
-        pip install pandas openpyxl
-        
+        curl -sSfL \
+          https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+          | sh -s -- -b /usr/local/bin
+
     # -----------------------------------
-    # Generate Excel Security Report
+    # Generate SBOM
+    # -----------------------------------
+    - name: Generate SBOM
+      if: steps.node_check.outputs.node_exists == 'true'
+      run: |
+        syft . -o json > sbom.json || true
+
+    # -----------------------------------
+    # Generate Excel Report
     # -----------------------------------
     - name: Generate Excel Security Report
       run: |
@@ -112,9 +212,9 @@ jobs:
             engine='openpyxl'
         )
 
-        # --------------------------------
+        # -------------------------------
         # Semgrep Sheet
-        # --------------------------------
+        # -------------------------------
         semgrep_rows = []
 
         if os.path.exists('semgrep.json'):
@@ -135,9 +235,9 @@ jobs:
             index=False
         )
 
-        # --------------------------------
+        # -------------------------------
         # Gitleaks Sheet
-        # --------------------------------
+        # -------------------------------
         gitleaks_rows = []
 
         if os.path.exists('gitleaks.json'):
@@ -158,9 +258,32 @@ jobs:
             index=False
         )
 
-        # --------------------------------
+        # -------------------------------
+        # Snyk Sheet
+        # -------------------------------
+        # snyk_rows = []
+
+        # if os.path.exists('snyk.json'):
+        #     with open('snyk.json') as f:
+        #         data = json.load(f)
+
+        #     for vuln in data.get('vulnerabilities', []):
+        #         snyk_rows.append({
+        #             'Severity': vuln.get('severity'),
+        #             'Package': vuln.get('packageName'),
+        #             'Version': vuln.get('version'),
+        #             'Title': vuln.get('title')
+        #         })
+
+        # pd.DataFrame(snyk_rows).to_excel(
+        #     writer,
+        #     sheet_name='Snyk',
+        #     index=False
+        # )
+
+        # -------------------------------
         # Trivy Sheet
-        # --------------------------------
+        # -------------------------------
         trivy_rows = []
 
         if os.path.exists('trivy.json'):
@@ -171,8 +294,8 @@ jobs:
                 for vuln in result.get('Vulnerabilities', []) or []:
                     trivy_rows.append({
                         'Severity': vuln.get('Severity'),
-                        'File': result.get('Target'),
-                        'Rule': vuln.get('VulnerabilityID'),
+                        'Package': vuln.get('PkgName'),
+                        'CVE': vuln.get('VulnerabilityID'),
                         'Details': vuln.get('Title')
                     })
 
@@ -182,9 +305,9 @@ jobs:
             index=False
         )
 
-        # --------------------------------
+        # -------------------------------
         # Checkov Sheet
-        # --------------------------------
+        # -------------------------------
         checkov_rows = []
 
         if os.path.exists('checkov.json'):
@@ -218,13 +341,57 @@ jobs:
             index=False
         )
 
+        # -------------------------------
+        # License Sheet
+        # -------------------------------
+        license_rows = []
+
+        if os.path.exists('license.json'):
+            with open('license.json') as f:
+                data = json.load(f)
+
+            for package, details in data.items():
+                license_rows.append({
+                    'Package': package,
+                    'License': details.get('licenses'),
+                    'Version': details.get('version')
+                })
+
+        pd.DataFrame(license_rows).to_excel(
+            writer,
+            sheet_name='Licenses',
+            index=False
+        )
+
+        # -------------------------------
+        # SBOM Sheet
+        # -------------------------------
+        sbom_rows = []
+
+        if os.path.exists('sbom.json'):
+            with open('sbom.json') as f:
+                data = json.load(f)
+
+            for artifact in data.get('artifacts', []):
+                sbom_rows.append({
+                    'Name': artifact.get('name'),
+                    'Version': artifact.get('version'),
+                    'Type': artifact.get('type')
+                })
+
+        pd.DataFrame(sbom_rows).to_excel(
+            writer,
+            sheet_name='SBOM',
+            index=False
+        )
+
         writer.close()
 
         print("security-report.xlsx generated")
         EOF
 
     # -----------------------------------
-    # Upload Excel Report
+    # Upload Security Report
     # -----------------------------------
     - name: Upload Security Excel Report
       uses: actions/upload-artifact@v4
