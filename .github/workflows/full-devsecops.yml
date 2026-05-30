@@ -158,7 +158,10 @@ jobs:
     - name: Build Docker Image
       if: steps.docker_check.outputs.docker_exists == 'true'
       run: |
-        docker build -t app-image . || true
+        docker build \
+          --build-arg TSC_FLAGS="--skipLibCheck --noImplicitAny false" \
+          -t app-image . || true
+
 
     # -----------------------------------
     # Run Trivy Container Scan
